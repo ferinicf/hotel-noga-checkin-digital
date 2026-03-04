@@ -10,15 +10,15 @@ import Confirmation from './components/Confirmation';
 import HistoryView from './components/HistoryView';
 import GuestReceipt from './components/GuestReceipt';
 import { Settings, Loader2, Download, X } from 'lucide-react';
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
 import { translations } from './translations';
-
-const STORAGE_KEY = 'noga_guest_history';
+import { supabase } from './supabaseClient';
 
 const App: React.FC = () => {
   const [currentStep, setCurrentStep] = useState<AppStep>('welcome');
   const [currentLanguage, setCurrentLanguage] = useState<Language>('es');
   const [isExtracting, setIsExtracting] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [history, setHistory] = useState<GuestData[]>([]);
   const [receiptData, setReceiptData] = useState<GuestData | null>(null);
   const [guestData, setGuestData] = useState<GuestData>({
@@ -34,25 +34,66 @@ const App: React.FC = () => {
 
   const t = translations[currentLanguage];
 
+  const fetchHistory = async () => {
+    const { data, error } = await supabase
+      .from('guests')
+      .select('*')
+      .order('created_at', { ascending: false });
+    
+    if (error) {
+      console.error('Error fetching history:', error);
+    } else if (data) {
+      const formattedData: GuestData[] = data.map(item => ({
+        id: item.id,
+        firstName: item.first_name,
+        lastName: item.last_name,
+        email: item.email,
+        cellphone: item.cellphone,
+        nationality: item.nationality,
+        birthday: item.birthday,
+        checkInDate: item.check_in_date,
+        checkOutDate: item.check_out_date,
+        acceptedAt: item.accepted_at ? new Date(item.accepted_at).toLocaleString() : '',
+        signature: item.signature_url,
+        idPhoto: item.id_photo_url
+      }));
+      setHistory(formattedData);
+    }
+  };
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const view = params.get('view');
     const guestId = params.get('id');
 
-    const saved = localStorage.getItem(STORAGE_KEY);
-    let loadedHistory: GuestData[] = [];
-    if (saved) {
-      try { 
-        loadedHistory = JSON.parse(saved);
-        setHistory(loadedHistory); 
-      } catch (e) { console.error(e); }
-    }
+    fetchHistory();
 
     if (view === 'receipt' && guestId) {
-      const found = loadedHistory.find(g => g.id === guestId);
-      if (found) {
-        setReceiptData(found);
-      }
+      const loadReceipt = async () => {
+        const { data, error } = await supabase
+          .from('guests')
+          .select('*')
+          .eq('id', guestId)
+          .single();
+        
+        if (data && !error) {
+          setReceiptData({
+            id: data.id,
+            firstName: data.first_name,
+            lastName: data.last_name,
+            email: data.email,
+            cellphone: data.cellphone,
+            nationality: data.nationality,
+            birthday: data.birthday,
+            checkInDate: data.check_in_date,
+            checkOutDate: data.check_out_date,
+            acceptedAt: data.accepted_at ? new Date(data.accepted_at).toLocaleString() : '',
+            signature: data.signature_url,
+            idPhoto: data.id_photo_url
+          });
+        }
+      };
+      loadReceipt();
     }
   }, []);
 
@@ -61,7 +102,7 @@ const App: React.FC = () => {
     setCurrentStep('registration');
     
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI(import.meta.env.VITE_GEMINI_API_KEY);
       const imagePart = {
         inlineData: {
           mimeType: 'image/jpeg',
@@ -69,31 +110,12 @@ const App: React.FC = () => {
         },
       };
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: { 
-          parts: [
-            imagePart, 
-            { text: "Extract the following information from this ID card: first name, last name, nationality, and birth date. Formatting: birthday must be YYYY-MM-DD. Return ONLY a valid JSON object. No markdown, no explanations." }
-          ] 
-        },
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              firstName: { type: Type.STRING },
-              lastName: { type: Type.STRING },
-              nationality: { type: Type.STRING },
-              birthday: { type: Type.STRING, description: "YYYY-MM-DD" },
-            },
-            required: ["firstName", "lastName", "nationality", "birthday"]
-          },
-        },
-      });
+      const response = await ai.getGenerativeModel({ model: "gemini-1.5-flash" }).generateContent([
+        "Extract the following information from this ID card: first name, last name, nationality, and birth date. Formatting: birthday must be YYYY-MM-DD. Return ONLY a valid JSON object.",
+        imagePart
+      ]);
 
-      const text = response.text;
-      // Limpiar posibles etiquetas markdown si la IA las incluye
+      const text = response.response.text();
       const jsonStr = text.includes('```') ? text.match(/\{[\s\S]*\}/)?.[0] || text : text;
       const extracted = JSON.parse(jsonStr);
       
@@ -114,27 +136,89 @@ const App: React.FC = () => {
     setGuestData(prev => ({ ...prev, ...newData }));
   }, []);
 
-  const saveToHistory = (finalData: GuestData) => {
-    let updatedHistory;
-    let finalWithId = { ...finalData };
+  const uploadFile = async (bucket: string, fileName: string, base64: string) => {
+    if (!base64 || !base64.startsWith('data:')) return base64;
     
-    if (finalData.id) {
-      updatedHistory = history.map(item => item.id === finalData.id ? finalData : item);
-    } else {
-      finalWithId.id = crypto.randomUUID();
-      updatedHistory = [finalWithId, ...history];
-    }
+    const response = await fetch(base64);
+    const blob = await response.blob();
+    const filePath = `${Date.now()}_${fileName}.jpg`;
     
-    setGuestData(finalWithId);
-    setHistory(updatedHistory);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedHistory));
+    const { data, error } = await supabase.storage
+      .from(bucket)
+      .upload(filePath, blob, { contentType: 'image/jpeg', upsert: true });
+    
+    if (error) throw error;
+    
+    const { data: { publicUrl } } = supabase.storage.from(bucket).getPublicUrl(data.path);
+    return publicUrl;
   };
 
-  const handleDeleteGuest = (id: string) => {
+  const saveToHistory = async (finalData: GuestData) => {
+    setIsSaving(true);
+    try {
+      let idPhotoUrl = finalData.idPhoto;
+      let signatureUrl = finalData.signature;
+
+      if (finalData.idPhoto && finalData.idPhoto.startsWith('data:')) {
+        idPhotoUrl = await uploadFile('id-photos', 'id', finalData.idPhoto);
+      }
+      
+      if (finalData.signature && finalData.signature.startsWith('data:')) {
+        signatureUrl = await uploadFile('signatures', 'sign', finalData.signature);
+      }
+
+      const dbData = {
+        first_name: finalData.firstName,
+        last_name: finalData.lastName,
+        email: finalData.email,
+        cellphone: finalData.cellphone,
+        nationality: finalData.nationality,
+        birthday: finalData.birthday,
+        check_in_date: finalData.checkInDate,
+        check_out_date: finalData.checkOutDate,
+        signature_url: signatureUrl,
+        id_photo_url: idPhotoUrl,
+      };
+
+      if (finalData.id) {
+        const { error } = await supabase
+          .from('guests')
+          .update(dbData)
+          .eq('id', finalData.id);
+        if (error) throw error;
+      } else {
+        const { data, error } = await supabase
+          .from('guests')
+          .insert([dbData])
+          .select();
+        if (error) throw error;
+        if (data && data[0]) {
+          finalData.id = data[0].id;
+        }
+      }
+      
+      setGuestData({ ...finalData, idPhoto: idPhotoUrl, signature: signatureUrl });
+      await fetchHistory();
+    } catch (error) {
+      console.error('Error saving to Supabase:', error);
+      alert('Error guardando los datos. Por favor intenta de nuevo.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeleteGuest = async (id: string) => {
     if (window.confirm(currentLanguage === 'es' ? '¿Estás seguro de que deseas eliminar este registro?' : 'Are you sure you want to delete this record?')) {
-      const updatedHistory = history.filter(item => item.id !== id);
-      setHistory(updatedHistory);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedHistory));
+      const { error } = await supabase
+        .from('guests')
+        .delete()
+        .eq('id', id);
+      
+      if (error) {
+        console.error('Error deleting:', error);
+      } else {
+        await fetchHistory();
+      }
     }
   };
 
@@ -195,11 +279,13 @@ const App: React.FC = () => {
       <Header />
       
       <main className="flex-1 p-4 md:p-12 pb-32 w-full mx-auto">
-        {isExtracting && (
+        {(isExtracting || isSaving) && (
           <div className="fixed inset-0 bg-white/80 backdrop-blur-md z-[100] flex flex-col items-center justify-center space-y-4">
             <Loader2 className="w-12 h-12 text-noga-brown animate-spin" />
-            <p className="text-noga-deepteal font-bold uppercase tracking-widest text-base">{t.scanning}</p>
-            <p className="text-sm text-noga-midteal">{t.scanningSub}</p>
+            <p className="text-noga-deepteal font-bold uppercase tracking-widest text-base">
+              {isExtracting ? t.scanning : (currentLanguage === 'es' ? 'Guardando Registro...' : 'Saving Registration...')}
+            </p>
+            <p className="text-sm text-noga-midteal">{isExtracting ? t.scanningSub : (currentLanguage === 'es' ? 'Subiendo datos y archivos...' : 'Uploading data and files...')}</p>
           </div>
         )}
 
