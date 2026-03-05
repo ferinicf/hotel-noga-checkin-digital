@@ -111,7 +111,7 @@ const App: React.FC = () => {
       };
 
       const response = await ai.getGenerativeModel({ model: "gemini-1.5-flash" }).generateContent([
-        "Extract the following information from this ID card: first name, last name, nationality, and birth date. Formatting: birthday must be YYYY-MM-DD. Return ONLY a valid JSON object.",
+        "Extract the following information from this ID card: first name, last name, nationality, and birth date. Formatting: 'birthday' must be YYYY-MM-DD. Return strictly JSON with these keys: firstName, lastName, nationality, birthday. Do not include any other text.",
         imagePart
       ]);
 
@@ -209,15 +209,35 @@ const App: React.FC = () => {
 
   const handleDeleteGuest = async (id: string) => {
     if (window.confirm(currentLanguage === 'es' ? '¿Estás seguro de que deseas eliminar este registro?' : 'Are you sure you want to delete this record?')) {
-      const { error } = await supabase
-        .from('guests')
-        .delete()
-        .eq('id', id);
-      
-      if (error) {
-        console.error('Error deleting:', error);
-      } else {
+      try {
+        // 1. Get the URLs to delete from storage
+        const { data: guest } = await supabase.from('guests').select('signature_url, id_photo_url').eq('id', id).single();
+        
+        if (guest) {
+          const buckets = ['id-photos', 'signatures'];
+          const urls = [guest.id_photo_url, guest.signature_url];
+          
+          for (let i = 0; i < urls.length; i++) {
+            if (urls[i] && urls[i].includes('.co/storage/v1/object/public/')) {
+              const path = urls[i].split('/').slice(-1)[0];
+              if (path) {
+                await supabase.storage.from(buckets[i]).remove([path]);
+              }
+            }
+          }
+        }
+
+        // 2. Delete from DB
+        const { error } = await supabase
+          .from('guests')
+          .delete()
+          .eq('id', id);
+        
+        if (error) throw error;
         await fetchHistory();
+      } catch (error) {
+        console.error('Error during deletion:', error);
+        alert(currentLanguage === 'es' ? 'Error al eliminar el registro.' : 'Error deleting record.');
       }
     }
   };
