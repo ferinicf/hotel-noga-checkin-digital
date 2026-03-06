@@ -98,11 +98,20 @@ const App: React.FC = () => {
   }, []);
 
   const extractDataFromId = async (base64Image: string) => {
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+    
+    if (!apiKey) {
+      console.error("DEBUG: VITE_GEMINI_API_KEY is missing!");
+      setGuestData(prev => ({ ...prev, idPhoto: base64Image }));
+      setCurrentStep('registration');
+      return;
+    }
+
     setIsExtracting(true);
     setCurrentStep('registration');
     
     try {
-      const ai = new GoogleGenAI(import.meta.env.VITE_GEMINI_API_KEY);
+      const ai = new GoogleGenAI(apiKey);
       const imagePart = {
         inlineData: {
           mimeType: 'image/jpeg',
@@ -112,6 +121,7 @@ const App: React.FC = () => {
 
       const prompt = `
         You are an OCR expert. Extract data from this ID/Passport.
+        Search for labels like "NOMBRES", "APELLIDOS", "NACIONALIDAD", "FECHA DE NACIMIENTO".
         Required Fields: First Name, Last Name, Nationality, Birth Date (YYYY-MM-DD).
         
         Return ONLY a JSON object with these EXACT keys:
