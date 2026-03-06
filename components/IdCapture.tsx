@@ -22,7 +22,6 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
   
   // Auto-capture state
   const [isAutoCapturing, setIsAutoCapturing] = useState(true);
-  const [sharpness, setSharpness] = useState(0);
   const [detectionProgress, setDetectionProgress] = useState(0);
   const animationRef = useRef<number>();
   const lastSharpnessRef = useRef<number[]>([]);
@@ -36,12 +35,13 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
     const ctx = canvas.getContext('2d');
     
     if (ctx) {
+      // SOLO espejar si es la cámara frontal (user)
       if (facingMode === 'user') {
         ctx.translate(canvas.width, 0);
         ctx.scale(-1, 1);
       }
       ctx.drawImage(videoRef.current, 0, 0);
-      const base64 = canvas.toDataURL('image/jpeg', 0.9);
+      const base64 = canvas.toDataURL('image/jpeg', 0.95);
       
       // Stop animation and camera
       if (animationRef.current) cancelAnimationFrame(animationRef.current);
@@ -70,36 +70,38 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
       const ctx = canvas.getContext('2d', { alpha: false });
 
       if (ctx && video.readyState === video.HAVE_ENOUGH_DATA) {
-        // Draw small version for analysis (faster)
+        // Draw small version for analysis (faster but high enough for detail)
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imageData.data;
         
-        // Basic Laplacian-like variance/gradient check
+        // Laplacian variance / gradient check
         let diff = 0;
+        let brightness = 0;
         for (let i = 0; i < data.length - 4; i += 4) {
-          // Average of RGB difference to next pixel
           const gray1 = (data[i] + data[i+1] + data[i+2]) / 3;
           const gray2 = (data[i+4] + data[i+5] + data[i+6]) / 3;
           diff += Math.abs(gray1 - gray2);
+          brightness += gray1;
         }
         
         const currentSharpness = diff / (canvas.width * canvas.height);
-        setSharpness(currentSharpness);
+        const avgBrightness = brightness / (canvas.width * canvas.height);
 
-        // Smoothing and threshold
+        // Smoothing
         lastSharpnessRef.current.push(currentSharpness);
-        if (lastSharpnessRef.current.length > 10) lastSharpnessRef.current.shift();
+        if (lastSharpnessRef.current.length > 8) lastSharpnessRef.current.shift();
         
         const avgSharpness = lastSharpnessRef.current.reduce((a, b) => a + b, 0) / lastSharpnessRef.current.length;
         
-        // Thresholds (empirically determined for common mobile cams)
-        // High sharpness is usually > 15-20 depending on resolution
-        const threshold = 18; 
+        // Thresholds adjusted: 
+        // 9-10 is "decently focused". 15 is "very sharp".
+        const threshold = 9.5; 
         
-        if (avgSharpness > threshold) {
+        // Ensure minimum brightness (not too dark)
+        if (avgSharpness > threshold && avgBrightness > 40) {
           setDetectionProgress(prev => {
-            const next = prev + 5;
+            const next = prev + 8; // Speed up detection
             if (next >= 100) {
               capturePhoto();
               return 100;
@@ -107,7 +109,7 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
             return next;
           });
         } else {
-          setDetectionProgress(prev => Math.max(0, prev - 2));
+          setDetectionProgress(prev => Math.max(0, prev - 4));
         }
       }
 
@@ -176,6 +178,7 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
     setIsLoading(true);
     setPermissionError(null);
     setDetectionProgress(0);
+    lastSharpnessRef.current = [];
     
     if (stream) {
       stream.getTracks().forEach(track => track.stop());
@@ -253,7 +256,8 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
 
   return (
     <div className="flex flex-col items-center justify-center py-4 md:py-8 space-y-6 animate-in fade-in duration-500 max-w-2xl mx-auto w-full">
-      <canvas ref={canvasRef} width="160" height="120" className="hidden" />
+      {/* Aumentamos resolución de análisis para mayor precisión */}
+      <canvas ref={canvasRef} width="320" height="240" className="hidden" />
       
       <div className="text-center space-y-2 px-4">
         <h3 className="text-xl md:text-2xl font-bold text-noga-deepteal uppercase tracking-widest">{t.idTitle}</h3>
@@ -310,14 +314,14 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
             
             {/* Guide Overlay */}
             <div className="absolute inset-0 border-[20px] md:border-[40px] border-black/40 pointer-events-none flex flex-col items-center justify-center">
-               <div className={`w-full h-full border-4 border-dashed rounded-xl transition-colors duration-300 ${detectionProgress > 10 ? (detectionProgress > 80 ? 'border-green-400' : 'border-yellow-400') : 'border-white/40'}`}></div>
+               <div className={`w-full h-full border-4 border-dashed rounded-xl transition-colors duration-300 ${detectionProgress > 10 ? (detectionProgress > 80 ? 'border-green-400' : 'border-white/40') : 'border-white/40'}`}></div>
                
                {isAutoCapturing && (
                  <div className="absolute bottom-6 left-0 right-0 flex flex-col items-center space-y-2">
                    <div className="bg-black/60 backdrop-blur-md px-4 py-2 rounded-full flex items-center gap-2 border border-white/20">
                      <Zap className={`w-3 h-3 ${detectionProgress > 50 ? 'text-yellow-400 fill-yellow-400' : 'text-white'}`} />
                      <span className="text-[10px] font-bold text-white uppercase tracking-widest">
-                       {detectionProgress > 0 ? (lang === 'es' ? `Enfocando... ${detectionProgress}%` : `Focusing... ${detectionProgress}%`) : (lang === 'es' ? 'Detección Automática Activa' : 'Auto Detection Active')}
+                       {detectionProgress > 0 ? (lang === 'es' ? `Escaneando... ${detectionProgress}%` : `Scanning... ${detectionProgress}%`) : (lang === 'es' ? 'Enfoque automático activo' : 'Auto focus active')}
                      </span>
                    </div>
                    <div className="w-48 h-1 bg-white/20 rounded-full overflow-hidden">
