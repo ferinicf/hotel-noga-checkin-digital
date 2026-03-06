@@ -111,34 +111,38 @@ const App: React.FC = () => {
       };
 
       const prompt = `
-        Analiza esta imagen de un documento de identidad (ID/Passaporte) y extrae la información requerida.
-        Busca etiquetas comunes como "NOMBRES", "APELLIDOS", "NACIONALIDAD", "FECHA DE NACIMIENTO".
+        You are an OCR expert. Extract data from this ID/Passport.
+        Required Fields: First Name, Last Name, Nationality, Birth Date (YYYY-MM-DD).
         
-        Debes retornar estrictamente un objeto JSON con las siguientes llaves exactas:
-        - "firstName": El nombre o nombres del titular.
-        - "lastName": El apellido o apellidos del titular.
-        - "nationality": La nacionalidad.
-        - "birthday": La fecha de nacimiento en formato YYYY-MM-DD.
+        Return ONLY a JSON object with these EXACT keys:
+        {
+          "firstName": "...",
+          "lastName": "...",
+          "nationality": "...",
+          "birthday": "YYYY-MM-DD"
+        }
         
-        Si no encuentras un dato, pon un string vacío "".
-        Solo responde con el objeto JSON, sin texto adicional ni bloques de código.
+        If a field is missing, use "". No explanation, no code blocks, JUST the JSON object.
       `;
 
-      const response = await ai.getGenerativeModel({ model: "gemini-1.5-flash" }).generateContent([
+      const result = await ai.getGenerativeModel({ model: "gemini-1.5-flash" }).generateContent([
         prompt,
         imagePart
       ]);
 
-      const text = response.response.text();
-      const jsonStr = text.includes('{') ? text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1) : text;
-      const rawExtracted = JSON.parse(jsonStr);
+      const text = result.response.text();
+      console.log("Gemini Raw Response:", text); // Helpful for debugging
 
-      // Normalización de llaves por si Gemini no sigue la instrucción exacta
+      // Robust JSON extraction
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      const jsonStr = jsonMatch ? jsonMatch[0] : text;
+      const raw = JSON.parse(jsonStr);
+
       const normalized = {
-        firstName: rawExtracted.firstName || rawExtracted.first_name || rawExtracted.nombre || rawExtracted.nombres || '',
-        lastName: rawExtracted.lastName || rawExtracted.last_name || rawExtracted.apellido || rawExtracted.apellidos || rawExtracted.surname || '',
-        nationality: rawExtracted.nationality || rawExtracted.nacionalidad || rawExtracted.country || '',
-        birthday: rawExtracted.birthday || rawExtracted.fecha_nacimiento || rawExtracted.birth_date || ''
+        firstName: raw.firstName || raw.first_name || raw.nombre || raw.nombres || raw.given_names || '',
+        lastName: raw.lastName || raw.last_name || raw.apellido || raw.apellidos || raw.sur_name || raw.family_name || '',
+        nationality: raw.nationality || raw.nacionalidad || raw.pais || raw.country || '',
+        birthday: raw.birthday || raw.fecha_nacimiento || raw.birth_date || raw.dob || ''
       };
       
       setGuestData(prev => ({
@@ -147,7 +151,8 @@ const App: React.FC = () => {
         idPhoto: base64Image
       }));
     } catch (error) {
-      console.error("AI Extraction failed:", error);
+      console.error("Extraction ERROR:", error);
+      // Even if AI fails, we must keep the photo!
       setGuestData(prev => ({ ...prev, idPhoto: base64Image }));
     } finally {
       setIsExtracting(false);

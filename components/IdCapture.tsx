@@ -23,6 +23,7 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
   // Auto-capture state
   const [isAutoCapturing, setIsAutoCapturing] = useState(true);
   const [detectionProgress, setDetectionProgress] = useState(0);
+  const [debugSharpness, setDebugSharpness] = useState(0);
   const animationRef = useRef<number>();
   const lastSharpnessRef = useRef<number[]>([]);
 
@@ -30,18 +31,18 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
     if (!videoRef.current || !videoRef.current.videoWidth) return;
     
     const canvas = document.createElement('canvas');
+    // Usamos resolución alta para la captura final
     canvas.width = videoRef.current.videoWidth;
     canvas.height = videoRef.current.videoHeight;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: false });
     
     if (ctx) {
-      // SOLO espejar si es la cámara frontal (user)
       if (facingMode === 'user') {
         ctx.translate(canvas.width, 0);
         ctx.scale(-1, 1);
       }
       ctx.drawImage(videoRef.current, 0, 0);
-      const base64 = canvas.toDataURL('image/jpeg', 0.95);
+      const base64 = canvas.toDataURL('image/jpeg', 0.9);
       
       // Stop animation and camera
       if (animationRef.current) cancelAnimationFrame(animationRef.current);
@@ -70,38 +71,51 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
       const ctx = canvas.getContext('2d', { alpha: false });
 
       if (ctx && video.readyState === video.HAVE_ENOUGH_DATA) {
-        // Draw small version for analysis (faster but high enough for detail)
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        // Analizamos el centro de la imagen donde suele estar el documento
+        const scanWidth = canvas.width;
+        const scanHeight = canvas.height;
+        ctx.drawImage(video, 0, 0, scanWidth, scanHeight);
+        
+        // Obtenemos solo el área central (60% del centro) para enfocar la detección
+        const rectSize = 0.7;
+        const startX = Math.floor(scanWidth * (1 - rectSize) / 2);
+        const startY = Math.floor(scanHeight * (1 - rectSize) / 2);
+        const width = Math.floor(scanWidth * rectSize);
+        const height = Math.floor(scanHeight * rectSize);
+        
+        const imageData = ctx.getImageData(startX, startY, width, height);
         const data = imageData.data;
         
-        // Laplacian variance / gradient check
         let diff = 0;
         let brightness = 0;
-        for (let i = 0; i < data.length - 4; i += 4) {
+        // Salto de 8 para mayor velocidad de análisis
+        for (let i = 0; i < data.length - 8; i += 8) {
           const gray1 = (data[i] + data[i+1] + data[i+2]) / 3;
           const gray2 = (data[i+4] + data[i+5] + data[i+6]) / 3;
           diff += Math.abs(gray1 - gray2);
           brightness += gray1;
         }
         
-        const currentSharpness = diff / (canvas.width * canvas.height);
-        const avgBrightness = brightness / (canvas.width * canvas.height);
+        const pixelsCount = (width * height) / 2; // porque saltamos de a 2 pixels (8 bytes)
+        const currentSharpness = diff / pixelsCount;
+        const avgBrightness = brightness / pixelsCount;
 
-        // Smoothing
+        setDebugSharpness(currentSharpness);
+
+        // Suavizado (mantenemos las últimas 5 muestras)
         lastSharpnessRef.current.push(currentSharpness);
-        if (lastSharpnessRef.current.length > 8) lastSharpnessRef.current.shift();
-        
+        if (lastSharpnessRef.current.length > 5) lastSharpnessRef.current.shift();
         const avgSharpness = lastSharpnessRef.current.reduce((a, b) => a + b, 0) / lastSharpnessRef.current.length;
         
-        // Thresholds adjusted: 
-        // 9-10 is "decently focused". 15 is "very sharp".
-        const threshold = 9.5; 
+        // Umbral de nitidez más permisivo: 7.0 es suficiente para leer bien.
+        // Un documento bien iluminado y enfocado suele dar > 12.0
+        const minSharpness = 7.5; 
+        const minBrightness = 45; // Evitar capturas en oscuridad
         
-        // Ensure minimum brightness (not too dark)
-        if (avgSharpness > threshold && avgBrightness > 40) {
+        if (avgSharpness > minSharpness && avgBrightness > minBrightness) {
           setDetectionProgress(prev => {
-            const next = prev + 8; // Speed up detection
+            const increment = avgSharpness > 12 ? 15 : 8; // Más rápido si es muy nítido
+            const next = prev + increment;
             if (next >= 100) {
               capturePhoto();
               return 100;
@@ -109,7 +123,8 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
             return next;
           });
         } else {
-          setDetectionProgress(prev => Math.max(0, prev - 4));
+          // Si perdemos el enfoque, bajamos el progreso gradualmente
+          setDetectionProgress(prev => Math.max(0, prev - 10));
         }
       }
 
@@ -124,55 +139,19 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
 
   useEffect(() => {
     let isMounted = true;
-
     const setupVideo = async () => {
       if (isCameraActive && stream && videoRef.current) {
-        if (videoRef.current.srcObject !== stream) {
-          videoRef.current.srcObject = stream;
-        }
-        
-        const handleLoadedMetadata = async () => {
-          if (!videoRef.current) return;
-          try {
-            await videoRef.current.play();
-          } catch (err) {
-            console.error("Autoplay failed:", err);
-          }
-        };
-
-        videoRef.current.addEventListener('loadedmetadata', handleLoadedMetadata);
-
+        videoRef.current.srcObject = stream;
         try {
           await videoRef.current.play();
         } catch (err) {
-          if (isMounted) {
-            setTimeout(() => {
-              if (isMounted && videoRef.current) {
-                videoRef.current.play().catch(e => console.error("Retry play failed:", e));
-              }
-            }, 500);
-          }
+          if (isMounted) setTimeout(() => videoRef.current?.play(), 500);
         }
-
-        return () => {
-          if (videoRef.current) {
-            videoRef.current.removeEventListener('loadedmetadata', handleLoadedMetadata);
-          }
-        };
       }
     };
-
     setupVideo();
     return () => { isMounted = false; };
   }, [isCameraActive, stream]);
-
-  useEffect(() => {
-    return () => {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
-    };
-  }, [stream]);
 
   const startCamera = async (mode: 'user' | 'environment' = facingMode) => {
     setIsLoading(true);
@@ -185,78 +164,33 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
       setStream(null);
     }
 
-    if (!window.isSecureContext) {
-      setPermissionError(lang === 'es' 
-        ? "La cámara requiere una conexión segura (HTTPS). Por favor verifica que la URL comience con https://" 
-        : "Camera access requires a secure connection (HTTPS). Please ensure the URL starts with https://");
-      setIsLoading(false);
-      return;
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 300));
-
     try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error("API de cámara no disponible en este navegador");
-      }
-
-      const attempts = [
-        { video: { facingMode: { ideal: mode }, width: { ideal: 1920 }, height: { ideal: 1080 } } },
-        { video: { facingMode: mode } },
-        { video: true }
-      ];
-
-      let mediaStream: MediaStream | null = null;
-      let lastError: any = null;
-
-      for (const constraints of attempts) {
-        try {
-          mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-          if (mediaStream) break;
-        } catch (e) {
-          lastError = e;
-        }
-      }
-
-      if (!mediaStream) throw lastError || new Error("Permission Denied");
-
+      const constraints = { 
+        video: { 
+          facingMode: mode,
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
+        } 
+      };
+      const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
       setStream(mediaStream);
       setFacingMode(mode);
       setIsCameraActive(true);
     } catch (err: any) {
-      console.error("Error de cámara:", err);
-      let errorMsg = lang === 'es' 
-        ? "Acceso denegado. Por favor, permite el uso de la cámara en los ajustes de tu navegador y recarga la página." 
-        : "Permission denied. Please allow camera access in your browser settings and refresh the page.";
-      
-      if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
-        errorMsg = lang === 'es'
-          ? "La cámara está siendo usada por otra aplicación o no está disponible."
-          : "Camera is already in use by another application or is unavailable.";
-      }
-      
-      setPermissionError(errorMsg);
+      setPermissionError(lang === 'es' ? "Error al acceder a la cámara." : "Error accessing camera.");
     } finally {
       setIsLoading(false);
     }
   };
 
-  const toggleCamera = () => {
-    const nextMode = facingMode === 'environment' ? 'user' : 'environment';
-    startCamera(nextMode);
-  };
-
   const stopCamera = () => {
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-      setStream(null);
-    }
+    if (stream) stream.getTracks().forEach(track => track.stop());
+    setStream(null);
     setIsCameraActive(false);
   };
 
   return (
-    <div className="flex flex-col items-center justify-center py-4 md:py-8 space-y-6 animate-in fade-in duration-500 max-w-2xl mx-auto w-full">
-      {/* Aumentamos resolución de análisis para mayor precisión */}
+    <div className="flex flex-col items-center justify-center py-4 space-y-6 animate-in fade-in duration-500 max-w-2xl mx-auto w-full">
       <canvas ref={canvasRef} width="320" height="240" className="hidden" />
       
       <div className="text-center space-y-2 px-4">
@@ -264,42 +198,17 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
         <p className="text-xs md:text-sm text-noga-deepteal/60">{t.idSub}</p>
       </div>
 
-      {permissionError && (
-        <div className="w-full mx-4 p-6 bg-red-50 border-2 border-red-200 rounded-3xl flex flex-col items-center text-center space-y-4 animate-in zoom-in duration-300">
-          <div className="p-3 bg-red-100 rounded-full text-red-600">
-            <ShieldAlert className="w-8 h-8" />
-          </div>
-          <p className="text-sm font-bold text-red-700 leading-relaxed">{permissionError}</p>
-          <button 
-            onClick={() => startCamera()} 
-            className="text-xs font-bold uppercase tracking-widest bg-red-600 text-white px-6 py-3 rounded-xl shadow-md hover:bg-red-700"
-          >
-            {lang === 'es' ? 'INTENTAR DE NUEVO' : 'TRY AGAIN'}
-          </button>
-        </div>
-      )}
-
       {!isCameraActive ? (
-        <div className="w-full aspect-[4/3] md:aspect-[3/2] bg-noga-lightblue/20 rounded-3xl border-2 border-dashed border-noga-midteal/40 flex flex-col items-center justify-center p-8 space-y-6 mx-4">
-          <div className="w-16 h-16 md:w-20 md:h-20 bg-white rounded-full flex items-center justify-center shadow-sm text-noga-brown">
-            {isLoading ? <Loader2 className="w-10 h-10 animate-spin" /> : <Camera className="w-10 h-10" />}
+        <div className="w-full aspect-[4/3] bg-noga-lightblue/20 rounded-3xl border-2 border-dashed border-noga-midteal/40 flex flex-col items-center justify-center p-8 space-y-6 mx-4">
+          <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center shadow-sm text-noga-brown">
+            {isLoading ? <Loader2 className="animate-spin" /> : <Camera className="w-10 h-10" />}
           </div>
-          <div className="flex flex-col gap-3 w-full max-w-xs">
-            <button 
-              disabled={isLoading}
-              onClick={() => startCamera('environment')}
-              className="bg-noga-deepteal text-white px-6 py-4 rounded-2xl font-bold hover:bg-noga-brown transition-all shadow-xl active:scale-95 disabled:opacity-50 text-sm flex items-center justify-center gap-2"
-            >
-              {isLoading && facingMode === 'environment' ? <Loader2 className="w-4 h-4 animate-spin" /> : (lang === 'es' ? 'CÁMARA TRASERA' : 'BACK CAMERA')}
-            </button>
-            <button 
-              disabled={isLoading}
-              onClick={() => startCamera('user')}
-              className="bg-white border-2 border-noga-deepteal text-noga-deepteal px-6 py-4 rounded-2xl font-bold hover:bg-noga-lightblue transition-all shadow-md active:scale-95 disabled:opacity-50 text-sm flex items-center justify-center gap-2"
-            >
-              {isLoading && facingMode === 'user' ? <Loader2 className="w-4 h-4 animate-spin" /> : (lang === 'es' ? 'CÁMARA FRONTAL' : 'FRONT CAMERA')}
-            </button>
-          </div>
+          <button 
+            onClick={() => startCamera('environment')}
+            className="bg-noga-deepteal text-white px-8 py-4 rounded-2xl font-bold shadow-xl active:scale-95 flex items-center gap-2"
+          >
+            {lang === 'es' ? 'ABRIR CÁMARA' : 'OPEN CAMERA'}
+          </button>
         </div>
       ) : (
         <div className="w-full space-y-4 px-4">
@@ -313,54 +222,51 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
             />
             
             {/* Guide Overlay */}
-            <div className="absolute inset-0 border-[20px] md:border-[40px] border-black/40 pointer-events-none flex flex-col items-center justify-center">
-               <div className={`w-full h-full border-4 border-dashed rounded-xl transition-colors duration-300 ${detectionProgress > 10 ? (detectionProgress > 80 ? 'border-green-400' : 'border-white/40') : 'border-white/40'}`}></div>
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+               {/* Frame central */}
+               <div className={`w-[80%] h-[70%] border-4 border-dashed rounded-3xl transition-all duration-300 ${detectionProgress > 10 ? (detectionProgress > 80 ? 'border-green-400 scale-105' : 'border-yellow-400') : 'border-white/40'}`}>
+               </div>
                
                {isAutoCapturing && (
-                 <div className="absolute bottom-6 left-0 right-0 flex flex-col items-center space-y-2">
-                   <div className="bg-black/60 backdrop-blur-md px-4 py-2 rounded-full flex items-center gap-2 border border-white/20">
-                     <Zap className={`w-3 h-3 ${detectionProgress > 50 ? 'text-yellow-400 fill-yellow-400' : 'text-white'}`} />
-                     <span className="text-[10px] font-bold text-white uppercase tracking-widest">
-                       {detectionProgress > 0 ? (lang === 'es' ? `Escaneando... ${detectionProgress}%` : `Scanning... ${detectionProgress}%`) : (lang === 'es' ? 'Enfoque automático activo' : 'Auto focus active')}
+                 <div className="absolute bottom-6 left-0 right-0 flex flex-col items-center space-y-3">
+                   <div className="bg-black/60 backdrop-blur-md px-6 py-2 rounded-full flex items-center gap-2 border border-white/20">
+                     <Zap className={`w-4 h-4 ${detectionProgress > 50 ? 'text-yellow-400 fill-yellow-400' : 'text-white'}`} />
+                     <span className="text-xs font-bold text-white uppercase tracking-widest">
+                       {detectionProgress > 0 ? (lang === 'es' ? `Escaneando: ${detectionProgress}%` : `Scanning: ${detectionProgress}%`) : (lang === 'es' ? 'Centra el documento' : 'Center the document')}
                      </span>
                    </div>
-                   <div className="w-48 h-1 bg-white/20 rounded-full overflow-hidden">
+                   <div className="w-48 h-2 bg-white/20 rounded-full overflow-hidden border border-white/10">
                      <div 
                        className="h-full bg-noga-brown transition-all duration-100 ease-out" 
                        style={{ width: `${detectionProgress}%` }}
                      />
                    </div>
+                   
+                   {/* Debug info (invisible para el usuario normal por transparencia) */}
+                   <span className="text-[8px] text-white/5 font-mono">DEBUG_SHARP: {debugSharpness.toFixed(2)}</span>
                  </div>
                )}
             </div>
             
             <button 
-              onClick={toggleCamera}
-              className="absolute top-4 right-4 bg-black/60 text-white p-3 rounded-full hover:bg-noga-brown transition-colors shadow-lg active:scale-90"
-              title="Cambiar Cámara"
+              onClick={() => startCamera(facingMode === 'environment' ? 'user' : 'environment')}
+              className="absolute top-4 right-4 bg-black/60 text-white p-3 rounded-full shadow-lg"
             >
               <RefreshCw className="w-5 h-5" />
             </button>
 
             <button 
               onClick={() => setIsAutoCapturing(!isAutoCapturing)}
-              className={`absolute top-4 left-4 p-3 rounded-full transition-colors shadow-lg active:scale-90 ${isAutoCapturing ? 'bg-noga-brown text-white' : 'bg-black/60 text-white'}`}
-              title="Auto Captura"
+              className={`absolute top-4 left-4 p-3 rounded-full shadow-lg ${isAutoCapturing ? 'bg-noga-brown text-white' : 'bg-black/60 text-white'}`}
             >
-              <Zap className={`w-5 h-5 ${isAutoCapturing ? 'fill-white' : ''}`} />
+              <Zap className="w-5 h-5" />
             </button>
-
-            {isLoading && (
-              <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-                <Loader2 className="w-10 h-10 text-white animate-spin" />
-              </div>
-            )}
           </div>
           
-          <div className="flex flex-col sm:flex-row gap-3">
+          <div className="flex gap-3">
             <button 
               onClick={capturePhoto}
-              className="flex-1 bg-noga-brown text-white py-5 rounded-2xl font-bold text-lg shadow-lg active:scale-95 flex items-center justify-center gap-2"
+              className="flex-1 bg-noga-brown text-white py-5 rounded-2xl font-bold text-lg shadow-lg flex items-center justify-center gap-2"
             >
               <Camera className="w-6 h-6" /> {t.captureBtn}
             </button>
@@ -374,7 +280,7 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
         </div>
       )}
 
-      <button onClick={onBack} className="flex items-center gap-2 text-[10px] font-bold text-noga-midteal uppercase tracking-widest hover:underline pt-2">
+      <button onClick={onBack} className="flex items-center gap-2 text-xs font-bold text-noga-midteal uppercase pt-2">
         <ArrowLeft className="w-3 h-3" /> {t.back}
       </button>
     </div>
