@@ -110,18 +110,40 @@ const App: React.FC = () => {
         },
       };
 
+      const prompt = `
+        Analiza esta imagen de un documento de identidad (ID/Passaporte) y extrae la información requerida.
+        Busca etiquetas comunes como "NOMBRES", "APELLIDOS", "NACIONALIDAD", "FECHA DE NACIMIENTO".
+        
+        Debes retornar estrictamente un objeto JSON con las siguientes llaves exactas:
+        - "firstName": El nombre o nombres del titular.
+        - "lastName": El apellido o apellidos del titular.
+        - "nationality": La nacionalidad.
+        - "birthday": La fecha de nacimiento en formato YYYY-MM-DD.
+        
+        Si no encuentras un dato, pon un string vacío "".
+        Solo responde con el objeto JSON, sin texto adicional ni bloques de código.
+      `;
+
       const response = await ai.getGenerativeModel({ model: "gemini-1.5-flash" }).generateContent([
-        "Extract the following information from this ID card: first name, last name, nationality, and birth date. Formatting: 'birthday' must be YYYY-MM-DD. Return strictly JSON with these keys: firstName, lastName, nationality, birthday. Do not include any other text.",
+        prompt,
         imagePart
       ]);
 
       const text = response.response.text();
-      const jsonStr = text.includes('```') ? text.match(/\{[\s\S]*\}/)?.[0] || text : text;
-      const extracted = JSON.parse(jsonStr);
+      const jsonStr = text.includes('{') ? text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1) : text;
+      const rawExtracted = JSON.parse(jsonStr);
+
+      // Normalización de llaves por si Gemini no sigue la instrucción exacta
+      const normalized = {
+        firstName: rawExtracted.firstName || rawExtracted.first_name || rawExtracted.nombre || rawExtracted.nombres || '',
+        lastName: rawExtracted.lastName || rawExtracted.last_name || rawExtracted.apellido || rawExtracted.apellidos || rawExtracted.surname || '',
+        nationality: rawExtracted.nationality || rawExtracted.nacionalidad || rawExtracted.country || '',
+        birthday: rawExtracted.birthday || rawExtracted.fecha_nacimiento || rawExtracted.birth_date || ''
+      };
       
       setGuestData(prev => ({
         ...prev,
-        ...extracted,
+        ...normalized,
         idPhoto: base64Image
       }));
     } catch (error) {
