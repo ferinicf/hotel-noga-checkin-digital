@@ -343,6 +343,9 @@ const App: React.FC = () => {
               {isExtracting ? t.scanning : (currentLanguage === 'es' ? 'Guardando Registro...' : 'Saving Registration...')}
             </p>
             <p className="text-sm text-noga-midteal">{isExtracting ? t.scanningSub : (currentLanguage === 'es' ? 'Subiendo datos y archivos...' : 'Uploading data and files...')}</p>
+            {!import.meta.env.VITE_GEMINI_API_KEY && isExtracting && (
+              <p className="text-[10px] text-red-500 font-mono mt-4">DIAGNOSTICO: VITE_GEMINI_API_KEY no detectada. Revisa Hostinger Variables.</p>
+            )}
           </div>
         )}
 

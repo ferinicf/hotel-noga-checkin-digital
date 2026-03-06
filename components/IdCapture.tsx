@@ -88,16 +88,17 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
         
         let diff = 0;
         let brightness = 0;
-        // Salto de 8 para mayor velocidad de análisis
-        for (let i = 0; i < data.length - 8; i += 8) {
+        // Salto de 4 para mayor velocidad pero buena precisión
+        for (let i = 0; i < data.length - 4; i += 4) {
           const gray1 = (data[i] + data[i+1] + data[i+2]) / 3;
+          // Comparamos con el siguiente pixel para detectar bordes
           const gray2 = (data[i+4] + data[i+5] + data[i+6]) / 3;
           diff += Math.abs(gray1 - gray2);
           brightness += gray1;
         }
         
-        const pixelsCount = (width * height) / 2; // porque saltamos de a 2 pixels (8 bytes)
-        const currentSharpness = diff / pixelsCount;
+        const pixelsCount = (width * height);
+        const currentSharpness = (diff / pixelsCount) * 10; // Escalado para mejor lectura
         const avgBrightness = brightness / pixelsCount;
 
         setDebugSharpness(currentSharpness);
@@ -107,24 +108,22 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
         if (lastSharpnessRef.current.length > 5) lastSharpnessRef.current.shift();
         const avgSharpness = lastSharpnessRef.current.reduce((a, b) => a + b, 0) / lastSharpnessRef.current.length;
         
-        // Umbral de nitidez más permisivo: 7.0 es suficiente para leer bien.
-        // Un documento bien iluminado y enfocado suele dar > 12.0
-        const minSharpness = 7.5; 
-        const minBrightness = 45; // Evitar capturas en oscuridad
+        // Umbral mucho más sensible: 3.5 a 5.0 es suficiente
+        const minSharpness = 4.5; 
+        const minBrightness = 40; 
         
         if (avgSharpness > minSharpness && avgBrightness > minBrightness) {
           setDetectionProgress(prev => {
-            const increment = avgSharpness > 12 ? 15 : 8; // Más rápido si es muy nítido
+            const increment = avgSharpness > 10 ? 25 : 12; // Mucho más rápido
             const next = prev + increment;
             if (next >= 100) {
-              capturePhoto();
+              setTimeout(() => capturePhoto(), 100); // Un pequeño delay para estabilizar
               return 100;
             }
             return next;
           });
         } else {
-          // Si perdemos el enfoque, bajamos el progreso gradualmente
-          setDetectionProgress(prev => Math.max(0, prev - 10));
+          setDetectionProgress(prev => Math.max(0, prev - 15));
         }
       }
 
