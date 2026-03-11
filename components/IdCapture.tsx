@@ -21,19 +21,14 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
   const [permissionError, setPermissionError] = useState<string | null>(null);
 
   // Auto-capture state
-  const [isAutoCapturing, setIsAutoCapturing] = useState(true);
-  const [detectionProgress, setDetectionProgress] = useState(0);
-  const [debugSharpness, setDebugSharpness] = useState(0);
+  const [countdown, setCountdown] = useState(15);
   const animationRef = useRef<number>();
-  const lastSharpnessRef = useRef<number[]>([]);
   const cameraStartTimeRef = useRef<number>(0);
-  const [secondsElapsed, setSecondsElapsed] = useState(0);
 
   const capturePhoto = useCallback(() => {
     if (!videoRef.current || !videoRef.current.videoWidth) return;
 
     const canvas = document.createElement('canvas');
-    // Usamos resolución alta para la captura final
     canvas.width = videoRef.current.videoWidth;
     canvas.height = videoRef.current.videoHeight;
     const ctx = canvas.getContext('2d', { alpha: false });
@@ -46,110 +41,36 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
       ctx.drawImage(videoRef.current, 0, 0);
       const base64 = canvas.toDataURL('image/jpeg', 0.9);
 
-      // Stop animation and camera
       if (animationRef.current) cancelAnimationFrame(animationRef.current);
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
         setStream(null);
       }
       setIsCameraActive(false);
-
       onCapture(base64);
     }
   }, [facingMode, onCapture, stream]);
 
-  // Sharpness Detection Loop
+  // Timer for 15 seconds
   useEffect(() => {
-    if (!isCameraActive || !isAutoCapturing || !videoRef.current) return;
+    if (!isCameraActive) {
+      setCountdown(15);
+      return;
+    }
 
-    const analyzeFrame = () => {
-      if (!videoRef.current || !canvasRef.current) {
-        animationRef.current = requestAnimationFrame(analyzeFrame);
-        return;
-      }
-
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d', { alpha: false });
-
-      if (ctx && video.readyState === video.HAVE_ENOUGH_DATA) {
-        // Analizamos el centro de la imagen donde suele estar el documento
-        const scanWidth = canvas.width;
-        const scanHeight = canvas.height;
-        ctx.drawImage(video, 0, 0, scanWidth, scanHeight);
-
-        // Obtenemos solo el área central (60% del centro) para enfocar la detección
-        const rectSize = 0.7;
-        const startX = Math.floor(scanWidth * (1 - rectSize) / 2);
-        const startY = Math.floor(scanHeight * (1 - rectSize) / 2);
-        const width = Math.floor(scanWidth * rectSize);
-        const height = Math.floor(scanHeight * rectSize);
-
-        const imageData = ctx.getImageData(startX, startY, width, height);
-        const data = imageData.data;
-
-        let diff = 0;
-        let brightness = 0;
-        // Salto de 4 para mayor velocidad pero buena precisión
-        for (let i = 0; i < data.length - 4; i += 4) {
-          const gray1 = (data[i] + data[i + 1] + data[i + 2]) / 3;
-          // Comparamos con el siguiente pixel para detectar bordes
-          const gray2 = (data[i + 4] + data[i + 5] + data[i + 6]) / 3;
-          diff += Math.abs(gray1 - gray2);
-          brightness += gray1;
+    const timer = setInterval(() => {
+      setCountdown(prev => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          capturePhoto();
+          return 0;
         }
+        return prev - 1;
+      });
+    }, 1000);
 
-        const pixelsCount = (width * height);
-        const currentSharpness = (diff / pixelsCount) * 10; // Escalado para mejor lectura
-        const avgBrightness = brightness / pixelsCount;
-
-        setDebugSharpness(currentSharpness);
-
-        // Suavizado (mantenemos las últimas 5 muestras)
-        lastSharpnessRef.current.push(currentSharpness);
-        if (lastSharpnessRef.current.length > 5) lastSharpnessRef.current.shift();
-        const avgSharpness = lastSharpnessRef.current.reduce((a, b) => a + b, 0) / lastSharpnessRef.current.length;
-
-        // Umbral de nitidez mucho más estricto (12.0) para asegurar que el documento esté legible
-        const minSharpness = 12.0;
-        const minBrightness = 45;
-
-        if (avgSharpness > minSharpness && avgBrightness > minBrightness) {
-          const elapsed = Date.now() - cameraStartTimeRef.current;
-          setSecondsElapsed(Math.floor(elapsed / 1000));
-
-          setDetectionProgress(prev => {
-            // Si no han pasado 10 segundos, limitamos el progreso proporcionalmente al tiempo
-            if (elapsed < 10000) {
-              const timeProgress = (elapsed / 10000) * 100;
-              return Math.min(timeProgress, prev + 1);
-            }
-
-            // Después de 10s, permitimos que el progreso avance según la nitidez
-            const increment = avgSharpness > 15 ? 5 : 2;
-            const next = prev + increment;
-            
-            if (next >= 100) {
-              if (prev < 100) {
-                setTimeout(() => capturePhoto(), 800);
-              }
-              return 100;
-            }
-            return next;
-          });
-        } else {
-          setDetectionProgress(prev => Math.max(0, prev - 10));
-        }
-      }
-
-      animationRef.current = requestAnimationFrame(analyzeFrame);
-    };
-
-    animationRef.current = requestAnimationFrame(analyzeFrame);
-    return () => {
-      if (animationRef.current) cancelAnimationFrame(animationRef.current);
-    };
-  }, [isCameraActive, isAutoCapturing, capturePhoto]);
+    return () => clearInterval(timer);
+  }, [isCameraActive, capturePhoto]);
 
   useEffect(() => {
     let isMounted = true;
@@ -170,9 +91,7 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
   const startCamera = async (mode: 'user' | 'environment' = facingMode) => {
     setIsLoading(true);
     setPermissionError(null);
-    setDetectionProgress(0);
-    setSecondsElapsed(0);
-    lastSharpnessRef.current = [];
+    setCountdown(15);
     cameraStartTimeRef.current = Date.now();
 
     if (stream) {
@@ -239,34 +158,23 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
 
             {/* Guide Overlay */}
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              {/* Frame central */}
-              <div className={`w-[80%] h-[70%] border-4 border-dashed rounded-3xl transition-all duration-300 ${detectionProgress > 10 ? (detectionProgress > 80 ? 'border-green-400 scale-105' : 'border-yellow-400') : 'border-white/40'}`}>
+              <div className="w-[80%] h-[70%] border-4 border-dashed rounded-3xl border-white/40">
               </div>
 
-              {isAutoCapturing && (
-                <div className="absolute bottom-6 left-0 right-0 flex flex-col items-center space-y-3">
-                  <div className="bg-black/60 backdrop-blur-md px-6 py-2 rounded-full flex items-center gap-2 border border-white/20">
-                    <Zap className={`w-4 h-4 ${detectionProgress > 50 ? 'text-yellow-400 fill-yellow-400' : 'text-white'}`} />
-                    <span className="text-xs font-bold text-white uppercase tracking-widest">
-                      {secondsElapsed < 10 
-                        ? (lang === 'es' ? `Estabilizando: ${10 - secondsElapsed}s` : `Stabilizing: ${10 - secondsElapsed}s`)
-                        : (detectionProgress > 0 
-                            ? (lang === 'es' ? `Capturando: ${detectionProgress}%` : `Capturing: ${detectionProgress}%`) 
-                            : (lang === 'es' ? 'Centra el documento' : 'Center the document'))
-                      }
-                    </span>
-                  </div>
-                  <div className="w-48 h-2 bg-white/20 rounded-full overflow-hidden border border-white/10">
-                    <div
-                      className="h-full bg-noga-brown transition-all duration-100 ease-out"
-                      style={{ width: `${detectionProgress}%` }}
-                    />
-                  </div>
-
-                  {/* Debug info (invisible para el usuario normal por transparencia) */}
-                  <span className="text-[8px] text-white/5 font-mono">DEBUG_SHARP: {debugSharpness.toFixed(2)}</span>
+              <div className="absolute bottom-6 left-0 right-0 flex flex-col items-center space-y-3">
+                <div className="bg-black/60 backdrop-blur-md px-6 py-2 rounded-full flex items-center gap-2 border border-white/20">
+                  <Zap className="w-4 h-4 text-yellow-400 fill-yellow-400" />
+                  <span className="text-xs font-bold text-white uppercase tracking-widest">
+                    {t.autoCaptureMessage.replace('{seconds}', countdown.toString())}
+                  </span>
                 </div>
-              )}
+                <div className="w-48 h-2 bg-white/20 rounded-full overflow-hidden border border-white/10">
+                  <div
+                    className="h-full bg-noga-brown transition-all duration-100 ease-out"
+                    style={{ width: `${(1 - (countdown / 15)) * 100}%` }}
+                  />
+                </div>
+              </div>
             </div>
 
             <button
@@ -275,34 +183,18 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
             >
               <RefreshCw className="w-5 h-5" />
             </button>
-
-            <button
-              onClick={() => setIsAutoCapturing(!isAutoCapturing)}
-              className={`absolute top-4 left-4 p-3 rounded-full shadow-lg ${isAutoCapturing ? 'bg-noga-brown text-white' : 'bg-black/60 text-white'}`}
-            >
-              <Zap className="w-5 h-5" />
-            </button>
           </div>
 
-          <div className="flex gap-3">
-            <button
-              onClick={capturePhoto}
-              className="flex-1 bg-noga-brown text-white py-5 rounded-2xl font-bold text-lg shadow-lg flex items-center justify-center gap-2"
-            >
-              <Camera className="w-6 h-6" /> {t.captureBtn}
-            </button>
-            <button
-              onClick={stopCamera}
-              className="px-6 border-2 border-noga-midteal/30 text-noga-deepteal py-4 rounded-2xl font-bold uppercase text-xs"
-            >
-              {t.cancel}
-            </button>
+          <div className="flex flex-col items-center justify-center py-4 bg-noga-brown/10 rounded-2xl border border-noga-brown/20 px-6 text-center">
+            <p className="text-noga-deepteal font-bold text-sm md:text-base uppercase tracking-wider">
+               {t.autoCaptureMessage.replace('{seconds}', countdown.toString())}
+            </p>
           </div>
         </div>
       )}
 
       <button onClick={onBack} className="flex items-center gap-2 text-xs font-bold text-noga-midteal uppercase pt-2">
-        <ArrowLeft className="w-3 h-3" /> {t.back}
+        <ArrowLeft className="w-3 h-3" /> {lang === 'es' ? 'VOLVER' : 'BACK'}
       </button>
     </div>
   );

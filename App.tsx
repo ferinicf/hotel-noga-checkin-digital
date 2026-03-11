@@ -10,7 +10,6 @@ import Confirmation from './components/Confirmation';
 import HistoryView from './components/HistoryView';
 import GuestReceipt from './components/GuestReceipt';
 import { Settings, Loader2, Download, X } from 'lucide-react';
-import { GoogleGenAI } from "@google/genai";
 import { translations } from './translations';
 import { supabase } from './supabaseClient';
 import AdminLogin from './components/AdminLogin';
@@ -18,7 +17,6 @@ import AdminLogin from './components/AdminLogin';
 const App: React.FC = () => {
   const [currentStep, setCurrentStep] = useState<AppStep>('welcome');
   const [currentLanguage, setCurrentLanguage] = useState<Language>('es');
-  const [isExtracting, setIsExtracting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [history, setHistory] = useState<GuestData[]>([]);
   const [receiptData, setReceiptData] = useState<GuestData | null>(null);
@@ -100,83 +98,11 @@ const App: React.FC = () => {
   }, []);
 
   const extractDataFromId = async (base64Image: string) => {
-    // Usamos el API Key de entorno o el fallback proporcionado por el usuario
-    const apiKey = import.meta.env.VITE_GEMINI_API_KEY || 'AIzaSyCJx1rjECSWsIUZXd2UQ1kB5E0_o7ZjzFA';
-
-    setIsExtracting(true);
+    setGuestData(prev => ({
+      ...prev,
+      idPhoto: base64Image
+    }));
     setCurrentStep('registration');
-
-    try {
-      const ai = new GoogleGenAI(apiKey);
-      const imagePart = {
-        inlineData: {
-          mimeType: 'image/jpeg',
-          data: base64Image.split(',')[1],
-        },
-      };
-
-      const prompt = `
-        Analiza esta imagen de una identificación oficial (INE, Licencia, Pasaporte, etc.).
-        Extrae los siguientes datos con la mayor precisión posible:
-        1. Nombres (firstName): Solo los nombres, omitiendo apellidos.
-        2. Apellidos (lastName): Todos los apellidos encontrados.
-        3. Nacionalidad (nationality): El país de origen o nacionalidad.
-        4. Fecha de Nacimiento (birthday): En formato YYYY-MM-DD.
-
-        PAUTAS IMPORTANTES:
-        - Si es un INE mexicano, el "Nombre" suele incluir apellidos en líneas separadas; sepáralos correctamente.
-        - Si un dato no es legible, usa "".
-        - No inventes datos.
-        - Responde EXCLUSIVAMENTE con un objeto JSON válido, sin bloques de código markdown, sin explicaciones.
-        
-        FORMATO DE RESPUESTA:
-        {"firstName": "JUAN", "lastName": "PEREZ GARCIA", "nationality": "MEXICANA", "birthday": "1990-05-15"}
-      `;
-
-      const model = ai.getGenerativeModel({
-        model: "gemini-1.5-flash",
-        generationConfig: {
-          temperature: 0.1, // Baja temperatura para mayor precisión en datos estructurados
-          topP: 1,
-          topK: 1,
-        }
-      });
-
-      const result = await model.generateContent([prompt, imagePart]);
-      const response = await result.response;
-      let text = response.text();
-
-      console.log("Gemini Raw Response:", text);
-
-      // Limpieza profunda del texto para extraer solo el JSON
-      text = text.replace(/```json/g, '').replace(/```/g, '').trim();
-      const jsonStart = text.indexOf('{');
-      const jsonEnd = text.lastIndexOf('}') + 1;
-
-      if (jsonStart === -1) throw new Error("No JSON found");
-
-      const jsonStr = text.substring(jsonStart, jsonEnd);
-      const raw = JSON.parse(jsonStr);
-
-      const normalized = {
-        firstName: raw.firstName || raw.first_name || raw.nombre || raw.nombres || '',
-        lastName: raw.lastName || raw.last_name || raw.apellido || raw.apellidos || '',
-        nationality: raw.nationality || raw.nacionalidad || raw.pais || '',
-        birthday: raw.birthday || raw.fecha_nacimiento || raw.birth_date || ''
-      };
-
-      setGuestData(prev => ({
-        ...prev,
-        ...normalized,
-        idPhoto: base64Image
-      }));
-    } catch (error) {
-      console.error("Extraction ERROR:", error);
-      // Even if AI fails, we must keep the photo!
-      setGuestData(prev => ({ ...prev, idPhoto: base64Image }));
-    } finally {
-      setIsExtracting(false);
-    }
   };
 
   const handleUpdateGuest = useCallback((newData: Partial<GuestData>) => {
@@ -346,16 +272,13 @@ const App: React.FC = () => {
       <Header />
 
       <main className="flex-1 p-4 md:p-12 pb-32 w-full mx-auto">
-        {(isExtracting || isSaving) && (
+        {isSaving && (
           <div className="fixed inset-0 bg-white/80 backdrop-blur-md z-[100] flex flex-col items-center justify-center space-y-4">
-            <include Loader2 className="w-12 h-12 text-noga-brown animate-spin" />
+            <Loader2 className="w-12 h-12 text-noga-brown animate-spin" />
             <p className="text-noga-deepteal font-bold uppercase tracking-widest text-base">
-              {isExtracting ? t.scanning : (currentLanguage === 'es' ? 'Guardando Registro...' : 'Saving Registration...')}
+              {currentLanguage === 'es' ? 'Guardando Registro...' : 'Saving Registration...'}
             </p>
-            <p className="text-sm text-noga-midteal">{isExtracting ? t.scanningSub : (currentLanguage === 'es' ? 'Subiendo datos y archivos...' : 'Uploading data and files...')}</p>
-            {!import.meta.env.VITE_GEMINI_API_KEY && isExtracting && (
-              <p className="text-[10px] text-red-500 font-mono mt-4">DIAGNOSTICO: VITE_GEMINI_API_KEY no detectada. Revisa Hostinger Variables.</p>
-            )}
+            <p className="text-sm text-noga-midteal">{currentLanguage === 'es' ? 'Subiendo datos y archivos...' : 'Uploading data and files...'}</p>
           </div>
         )}
 
