@@ -108,22 +108,24 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
         if (lastSharpnessRef.current.length > 5) lastSharpnessRef.current.shift();
         const avgSharpness = lastSharpnessRef.current.reduce((a, b) => a + b, 0) / lastSharpnessRef.current.length;
         
-        // Umbral mucho más sensible: 3.5 a 5.0 es suficiente
-        const minSharpness = 4.5; 
-        const minBrightness = 40; 
-        
+        // Umbral de nitidez más exigente para asegurar que se vea claro (8.5)
+        const minSharpness = 8.5;
+        const minBrightness = 45;
+
         if (avgSharpness > minSharpness && avgBrightness > minBrightness) {
           setDetectionProgress(prev => {
-            const increment = avgSharpness > 10 ? 25 : 12; // Mucho más rápido
+            // Incremento más lento para dar tiempo a enfocar y alinear (8% o 4%)
+            const increment = avgSharpness > 12 ? 8 : 4; 
             const next = prev + increment;
             if (next >= 100) {
-              setTimeout(() => capturePhoto(), 100); // Un pequeño delay para estabilizar
+              setTimeout(() => capturePhoto(), 400); // Retardo para estabilizar la imagen
               return 100;
             }
             return next;
           });
         } else {
-          setDetectionProgress(prev => Math.max(0, prev - 15));
+          // Penalización mayor si se mueve para reiniciar la detección
+          setDetectionProgress(prev => Math.max(0, prev - 25));
         }
       }
 

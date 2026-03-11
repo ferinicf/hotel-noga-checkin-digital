@@ -13,6 +13,7 @@ import { Settings, Loader2, Download, X } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import { translations } from './translations';
 import { supabase } from './supabaseClient';
+import AdminLogin from './components/AdminLogin';
 
 const App: React.FC = () => {
   const [currentStep, setCurrentStep] = useState<AppStep>('welcome');
@@ -21,6 +22,7 @@ const App: React.FC = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [history, setHistory] = useState<GuestData[]>([]);
   const [receiptData, setReceiptData] = useState<GuestData | null>(null);
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [guestData, setGuestData] = useState<GuestData>({
     firstName: '',
     lastName: '',
@@ -98,18 +100,12 @@ const App: React.FC = () => {
   }, []);
 
   const extractDataFromId = async (base64Image: string) => {
-    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-    
-    if (!apiKey) {
-      console.error("DEBUG: VITE_GEMINI_API_KEY is missing!");
-      setGuestData(prev => ({ ...prev, idPhoto: base64Image }));
-      setCurrentStep('registration');
-      return;
-    }
+    // Usamos el API Key de entorno o el fallback proporcionado por el usuario
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY || 'AIzaSyCJx1rjECSWsIUZXd2UQ1kB5E0_o7ZjzFA';
 
     setIsExtracting(true);
     setCurrentStep('registration');
-    
+
     try {
       const ai = new GoogleGenAI(apiKey);
       const imagePart = {
@@ -120,11 +116,13 @@ const App: React.FC = () => {
       };
 
       const prompt = `
-        You are an OCR expert. Extract data from this ID/Passport.
-        Search for labels like "NOMBRES", "APELLIDOS", "NACIONALIDAD", "FECHA DE NACIMIENTO".
-        Required Fields: First Name, Last Name, Nationality, Birth Date (YYYY-MM-DD).
+        Eres un experto en extracción de documentos. Analiza esta imagen y extrae:
+        - Nombres (firstName)
+        - Apellidos (lastName)
+        - Nacionalidad (nationality)
+        - Fecha de Nacimiento (birthday) en formato YYYY-MM-DD
         
-        Return ONLY a JSON object with these EXACT keys:
+        IMPORTANTE: Responde ÚNICAMENTE con un objeto JSON válido con estas llaves exactas:
         {
           "firstName": "...",
           "lastName": "...",
@@ -132,7 +130,7 @@ const App: React.FC = () => {
           "birthday": "YYYY-MM-DD"
         }
         
-        If a field is missing, use "". No explanation, no code blocks, JUST the JSON object.
+        Si no encuentras un campo, usa "". No incluyas explicaciones ni bloques de código.
       `;
 
       const result = await ai.getGenerativeModel({ model: "gemini-1.5-flash" }).generateContent([
@@ -141,18 +139,19 @@ const App: React.FC = () => {
       ]);
 
       const text = result.response.text();
-      console.log("Gemini Raw Response:", text); // Helpful for debugging
+      console.log("Raw OCR Response:", text);
 
-      // Robust JSON extraction
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      const jsonStr = jsonMatch ? jsonMatch[0] : text;
+      // Limpiamos la respuesta para asegurar que es JSON puro
+      const jsonStart = text.indexOf('{');
+      const jsonEnd = text.lastIndexOf('}') + 1;
+      const jsonStr = jsonStart !== -1 ? text.substring(jsonStart, jsonEnd) : text;
       const raw = JSON.parse(jsonStr);
 
       const normalized = {
-        firstName: raw.firstName || raw.first_name || raw.nombre || raw.nombres || raw.given_names || '',
-        lastName: raw.lastName || raw.last_name || raw.apellido || raw.apellidos || raw.sur_name || raw.family_name || '',
-        nationality: raw.nationality || raw.nacionalidad || raw.pais || raw.country || '',
-        birthday: raw.birthday || raw.fecha_nacimiento || raw.birth_date || raw.dob || ''
+        firstName: raw.firstName || raw.first_name || raw.nombre || raw.nombres || '',
+        lastName: raw.lastName || raw.last_name || raw.apellido || raw.apellidos || '',
+        nationality: raw.nationality || raw.nacionalidad || raw.pais || '',
+        birthday: raw.birthday || raw.fecha_nacimiento || raw.birth_date || ''
       };
       
       setGuestData(prev => ({
@@ -162,7 +161,6 @@ const App: React.FC = () => {
       }));
     } catch (error) {
       console.error("Extraction ERROR:", error);
-      // Even if AI fails, we must keep the photo!
       setGuestData(prev => ({ ...prev, idPhoto: base64Image }));
     } finally {
       setIsExtracting(false);
@@ -247,7 +245,6 @@ const App: React.FC = () => {
   const handleDeleteGuest = async (id: string) => {
     if (window.confirm(currentLanguage === 'es' ? '¿Estás seguro de que deseas eliminar este registro?' : 'Are you sure you want to delete this record?')) {
       try {
-        // 1. Get the URLs to delete from storage
         const { data: guest } = await supabase.from('guests').select('signature_url, id_photo_url').eq('id', id).single();
         
         if (guest) {
@@ -256,7 +253,8 @@ const App: React.FC = () => {
           
           for (let i = 0; i < urls.length; i++) {
             if (urls[i] && urls[i].includes('.co/storage/v1/object/public/')) {
-              const path = urls[i].split('/').slice(-1)[0];
+              const parts = urls[i].split('/');
+              const path = parts[parts.length - 1];
               if (path) {
                 await supabase.storage.from(buckets[i]).remove([path]);
               }
@@ -264,7 +262,6 @@ const App: React.FC = () => {
           }
         }
 
-        // 2. Delete from DB
         const { error } = await supabase
           .from('guests')
           .delete()
@@ -343,9 +340,6 @@ const App: React.FC = () => {
               {isExtracting ? t.scanning : (currentLanguage === 'es' ? 'Guardando Registro...' : 'Saving Registration...')}
             </p>
             <p className="text-sm text-noga-midteal">{isExtracting ? t.scanningSub : (currentLanguage === 'es' ? 'Subiendo datos y archivos...' : 'Uploading data and files...')}</p>
-            {!import.meta.env.VITE_GEMINI_API_KEY && isExtracting && (
-              <p className="text-[10px] text-red-500 font-mono mt-4">DIAGNOSTICO: VITE_GEMINI_API_KEY no detectada. Revisa Hostinger Variables.</p>
-            )}
           </div>
         )}
 
@@ -404,14 +398,32 @@ const App: React.FC = () => {
             <Confirmation data={guestData} onReset={resetForm} lang={currentLanguage} />
           )}
 
-          {currentStep === 'history' && (
-            <HistoryView 
-              history={history} 
-              onBack={() => goToStep('welcome')} 
-              lang={currentLanguage} 
-              onEdit={handleEditGuest}
-              onDelete={handleDeleteGuest}
+          {currentStep === 'login' && (
+            <AdminLogin 
+              onLogin={() => {
+                setIsAdminAuthenticated(true);
+                goToStep('history');
+              }}
+              onBack={() => goToStep('welcome')}
+              lang={currentLanguage}
             />
+          )}
+
+          {currentStep === 'history' && (
+            isAdminAuthenticated ? (
+              <HistoryView 
+                history={history} 
+                onBack={() => {
+                  setIsAdminAuthenticated(false);
+                  goToStep('welcome');
+                }} 
+                lang={currentLanguage} 
+                onEdit={handleEditGuest}
+                onDelete={handleDeleteGuest}
+              />
+            ) : (
+              <AdminLogin onLogin={() => { setIsAdminAuthenticated(true); goToStep('history'); }} onBack={() => goToStep('welcome')} lang={currentLanguage} />
+            )
           )}
         </div>
       </main>
@@ -422,7 +434,7 @@ const App: React.FC = () => {
           <p className="text-[10px] text-noga-midteal">Comunidad y Convivencia</p>
         </div>
         <button 
-          onClick={() => goToStep('history')}
+          onClick={() => goToStep('login')}
           className="flex items-center gap-2 px-4 py-2 rounded-lg border border-noga-midteal/30 text-noga-deepteal hover:bg-noga-lightblue transition-colors"
         >
           <Settings className="w-4 h-4" />
