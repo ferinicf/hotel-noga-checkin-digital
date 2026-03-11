@@ -1,104 +1,113 @@
 
-import React, { useState, useCallback, useEffect } from 'react';
-import { AppStep, GuestData, Language } from './types';
-import Header from './components/Header';
+import React, { useState, useEffect, useCallback } from 'react';
+import { GoogleGenAI } from '@google/genai';
+import { 
+  History, 
+  UserPlus, 
+  Settings, 
+  ChevronRight,
+  Loader2
+} from 'lucide-react';
 import Welcome from './components/Welcome';
 import IdCapture from './components/IdCapture';
 import RegistrationForm from './components/RegistrationForm';
-import RulesGrid from './components/RulesGrid';
-import SignaturePad from './components/SignaturePad';
+import Rules from './components/Rules';
+import Signature from './components/Signature';
 import Confirmation from './components/Confirmation';
 import HistoryView from './components/HistoryView';
-import GuestReceipt from './components/GuestReceipt';
-import { Settings, Loader2, Download, X } from 'lucide-react';
-import { GoogleGenAI } from "@google/genai";
+import AdminLogin from './components/AdminLogin';
+import { GuestData, AppStep, Language } from './types';
 import { translations } from './translations';
 import { supabase } from './supabaseClient';
-import AdminLogin from './components/AdminLogin';
 
-const App: React.FC = () => {
+const initialGuestData: GuestData = {
+  firstName: '',
+  lastName: '',
+  email: '',
+  cellphone: '',
+  nationality: '',
+  birthday: '',
+  checkInDate: new Date().toISOString().split('T')[0],
+  checkOutDate: '',
+  idPhoto: '',
+  signature: '',
+  acceptedRules: false
+};
+
+function App() {
   const [currentStep, setCurrentStep] = useState<AppStep>('welcome');
-  const [currentLanguage, setCurrentLanguage] = useState<Language>('es');
+  const [guestData, setGuestData] = useState<GuestData>(initialGuestData);
+  const [language, setLanguage] = useState<Language>('es');
   const [isExtracting, setIsExtracting] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [history, setHistory] = useState<GuestData[]>([]);
-  const [receiptData, setReceiptData] = useState<GuestData | null>(null);
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
-  const [guestData, setGuestData] = useState<GuestData>({
-    firstName: '',
-    lastName: '',
-    email: '',
-    cellphone: '',
-    nationality: '',
-    birthday: '',
-    checkInDate: new Date().toISOString().split('T')[0],
-    checkOutDate: '',
-  });
 
-  const t = translations[currentLanguage];
+  const t = translations[language];
 
-  const fetchHistory = async () => {
-    const { data, error } = await supabase
-      .from('guests')
-      .select('*')
-      .order('created_at', { ascending: false });
-    
-    if (error) {
-      console.error('Error fetching history:', error);
-    } else if (data) {
-      const formattedData: GuestData[] = data.map(item => ({
-        id: item.id,
-        firstName: item.first_name,
-        lastName: item.last_name,
-        email: item.email,
-        cellphone: item.cellphone,
-        nationality: item.nationality,
-        birthday: item.birthday,
-        checkInDate: item.check_in_date,
-        checkOutDate: item.check_out_date,
-        acceptedAt: item.accepted_at ? new Date(item.accepted_at).toLocaleString() : '',
-        signature: item.signature_url,
-        idPhoto: item.id_photo_url
-      }));
-      setHistory(formattedData);
+  // Auto-save to Supabase if finished
+  const handleFinish = async () => {
+    try {
+      // 1. Upload ID Photo to Storage
+      let idPhotoUrl = '';
+      if (guestData.idPhoto) {
+        const fileExt = 'jpg';
+        const fileName = `${Date.now()}_id.${fileExt}`;
+        const base64Data = guestData.idPhoto.split(',')[1];
+        const blob = await fetch(`data:image/jpeg;base64,${base64Data}`).then(res => res.blob());
+
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from('guest-documents')
+          .upload(fileName, blob);
+
+        if (uploadError) throw uploadError;
+        idPhotoUrl = fileName;
+      }
+
+      // 2. Upload Signature to Storage
+      let signatureUrl = '';
+      if (guestData.signature) {
+        const fileExt = 'png';
+        const fileName = `${Date.now()}_sign.${fileExt}`;
+        const base64Data = guestData.signature.split(',')[1];
+        const blob = await fetch(`data:image/png;base64,${base64Data}`).then(res => res.blob());
+
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from('guest-signatures')
+          .upload(fileName, blob);
+
+        if (uploadError) throw uploadError;
+        signatureUrl = fileName;
+      }
+
+      // 3. Save Record to Database
+      const { error } = await supabase.from('guests').insert([
+        {
+          first_name: guestData.firstName,
+          last_name: guestData.lastName,
+          email: guestData.email,
+          cellphone: guestData.cellphone,
+          nationality: guestData.nationality,
+          birthday: guestData.birthday,
+          check_in_date: guestData.checkInDate,
+          check_out_date: guestData.checkOutDate,
+          id_photo_url: idPhotoUrl,
+          signature_url: signatureUrl,
+          accepted_rules: guestData.acceptedRules,
+          language: language
+        }
+      ]);
+
+      if (error) throw error;
+      setCurrentStep('confirmation');
+    } catch (error) {
+      console.error('Error saving data:', error);
+      alert('Error al guardar el registro. Por favor intente de nuevo.');
     }
   };
 
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const view = params.get('view');
-    const guestId = params.get('id');
-
-    fetchHistory();
-
-    if (view === 'receipt' && guestId) {
-      const loadReceipt = async () => {
-        const { data, error } = await supabase
-          .from('guests')
-          .select('*')
-          .eq('id', guestId)
-          .single();
-        
-        if (data && !error) {
-          setReceiptData({
-            id: data.id,
-            firstName: data.first_name,
-            lastName: data.last_name,
-            email: data.email,
-            cellphone: data.cellphone,
-            nationality: data.nationality,
-            birthday: data.birthday,
-            checkInDate: data.check_in_date,
-            checkOutDate: data.check_out_date,
-            acceptedAt: data.accepted_at ? new Date(data.accepted_at).toLocaleString() : '',
-            signature: data.signature_url,
-            idPhoto: data.id_photo_url
-          });
-        }
-      };
-      loadReceipt();
-    }
-  }, []);
+  const resetApp = () => {
+    setGuestData(initialGuestData);
+    setCurrentStep('welcome');
+  };
 
   const extractDataFromId = async (base64Image: string) => {
     // Usamos el API Key de entorno o el fallback proporcionado por el usuario
@@ -117,35 +126,46 @@ const App: React.FC = () => {
       };
 
       const prompt = `
-        Eres un experto en extracción de documentos. Analiza esta imagen y extrae:
-        - Nombres (firstName)
-        - Apellidos (lastName)
-        - Nacionalidad (nationality)
-        - Fecha de Nacimiento (birthday) en formato YYYY-MM-DD
+        Analiza esta imagen de una identificación oficial (INE, Licencia, Pasaporte, etc.).
+        Extrae los siguientes datos con la mayor precisión posible:
+        1. Nombres (firstName): Solo los nombres, omitiendo apellidos.
+        2. Apellidos (lastName): Todos los apellidos encontrados.
+        3. Nacionalidad (nationality): El país de origen o nacionalidad.
+        4. Fecha de Nacimiento (birthday): En formato YYYY-MM-DD.
+
+        PAUTAS IMPORTANTES:
+        - Si es un INE mexicano, el "Nombre" suele incluir apellidos en líneas separadas; sepáralos correctamente.
+        - Si un dato no es legible, usa "".
+        - No inventes datos.
+        - Responde EXCLUSIVAMENTE con un objeto JSON válido, sin bloques de código markdown, sin explicaciones.
         
-        IMPORTANTE: Responde ÚNICAMENTE con un objeto JSON válido con estas llaves exactas:
-        {
-          "firstName": "...",
-          "lastName": "...",
-          "nationality": "...",
-          "birthday": "YYYY-MM-DD"
-        }
-        
-        Si no encuentras un campo, usa "". No incluyas explicaciones ni bloques de código.
+        FORMATO DE RESPUESTA:
+        {"firstName": "JUAN", "lastName": "PEREZ GARCIA", "nationality": "MEXICANA", "birthday": "1990-05-15"}
       `;
 
-      const result = await ai.getGenerativeModel({ model: "gemini-1.5-flash" }).generateContent([
-        prompt,
-        imagePart
-      ]);
+      const model = ai.getGenerativeModel({ 
+        model: "gemini-1.5-flash",
+        generationConfig: {
+          temperature: 0.1, // Baja temperatura para mayor precisión en datos estructurados
+          topP: 1,
+          topK: 1,
+        }
+      });
 
-      const text = result.response.text();
-      console.log("Raw OCR Response:", text);
+      const result = await model.generateContent([prompt, imagePart]);
+      const response = await result.response;
+      let text = response.text();
+      
+      console.log("Gemini Raw Response:", text);
 
-      // Limpiamos la respuesta para asegurar que es JSON puro
+      // Limpieza profunda del texto para extraer solo el JSON
+      text = text.replace(/```json/g, '').replace(/```/g, '').trim();
       const jsonStart = text.indexOf('{');
       const jsonEnd = text.lastIndexOf('}') + 1;
-      const jsonStr = jsonStart !== -1 ? text.substring(jsonStart, jsonEnd) : text;
+      
+      if (jsonStart === -1) throw new Error("No JSON found");
+      
+      const jsonStr = text.substring(jsonStart, jsonEnd);
       const raw = JSON.parse(jsonStr);
 
       const normalized = {
@@ -154,296 +174,148 @@ const App: React.FC = () => {
         nationality: raw.nationality || raw.nacionalidad || raw.pais || '',
         birthday: raw.birthday || raw.fecha_nacimiento || raw.birth_date || ''
       };
-      
+
       setGuestData(prev => ({
         ...prev,
         ...normalized,
         idPhoto: base64Image
       }));
     } catch (error) {
-      console.error("Extraction ERROR:", error);
+      console.error('Error extracting data:', error);
       setGuestData(prev => ({ ...prev, idPhoto: base64Image }));
     } finally {
       setIsExtracting(false);
     }
   };
 
-  const handleUpdateGuest = useCallback((newData: Partial<GuestData>) => {
-    setGuestData(prev => ({ ...prev, ...newData }));
-  }, []);
-
-  const uploadFile = async (bucket: string, fileName: string, base64: string) => {
-    if (!base64 || !base64.startsWith('data:')) return base64;
-    
-    const response = await fetch(base64);
-    const blob = await response.blob();
-    const filePath = `${Date.now()}_${fileName}.jpg`;
-    
-    const { data, error } = await supabase.storage
-      .from(bucket)
-      .upload(filePath, blob, { contentType: 'image/jpeg', upsert: true });
-    
-    if (error) throw error;
-    
-    const { data: { publicUrl } } = supabase.storage.from(bucket).getPublicUrl(data.path);
-    return publicUrl;
-  };
-
-  const saveToHistory = async (finalData: GuestData) => {
-    setIsSaving(true);
-    try {
-      let idPhotoUrl = finalData.idPhoto;
-      let signatureUrl = finalData.signature;
-
-      if (finalData.idPhoto && finalData.idPhoto.startsWith('data:')) {
-        idPhotoUrl = await uploadFile('id-photos', 'id', finalData.idPhoto);
-      }
+  const renderStep = () => {
+    switch (currentStep) {
+      case 'welcome':
+        return <Welcome onStart={() => setCurrentStep('idCapture')} onLanguageChange={setLanguage} lang={language} />;
       
-      if (finalData.signature && finalData.signature.startsWith('data:')) {
-        signatureUrl = await uploadFile('signatures', 'sign', finalData.signature);
-      }
-
-      const dbData = {
-        first_name: finalData.firstName,
-        last_name: finalData.lastName,
-        email: finalData.email,
-        cellphone: finalData.cellphone,
-        nationality: finalData.nationality,
-        birthday: finalData.birthday,
-        check_in_date: finalData.checkInDate,
-        check_out_date: finalData.checkOutDate,
-        signature_url: signatureUrl,
-        id_photo_url: idPhotoUrl,
-      };
-
-      if (finalData.id) {
-        const { error } = await supabase
-          .from('guests')
-          .update(dbData)
-          .eq('id', finalData.id);
-        if (error) throw error;
-      } else {
-        const { data, error } = await supabase
-          .from('guests')
-          .insert([dbData])
-          .select();
-        if (error) throw error;
-        if (data && data[0]) {
-          finalData.id = data[0].id;
-        }
-      }
+      case 'idCapture':
+        return <IdCapture onCapture={extractDataFromId} onBack={() => setCurrentStep('welcome')} lang={language} />;
       
-      setGuestData({ ...finalData, idPhoto: idPhotoUrl, signature: signatureUrl });
-      await fetchHistory();
-    } catch (error) {
-      console.error('Error saving to Supabase:', error);
-      alert('Error guardando los datos. Por favor intenta de nuevo.');
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleDeleteGuest = async (id: string) => {
-    if (window.confirm(currentLanguage === 'es' ? '¿Estás seguro de que deseas eliminar este registro?' : 'Are you sure you want to delete this record?')) {
-      try {
-        const { data: guest } = await supabase.from('guests').select('signature_url, id_photo_url').eq('id', id).single();
-        
-        if (guest) {
-          const buckets = ['id-photos', 'signatures'];
-          const urls = [guest.id_photo_url, guest.signature_url];
-          
-          for (let i = 0; i < urls.length; i++) {
-            if (urls[i] && urls[i].includes('.co/storage/v1/object/public/')) {
-              const parts = urls[i].split('/');
-              const path = parts[parts.length - 1];
-              if (path) {
-                await supabase.storage.from(buckets[i]).remove([path]);
-              }
-            }
-          }
-        }
-
-        const { error } = await supabase
-          .from('guests')
-          .delete()
-          .eq('id', id);
-        
-        if (error) throw error;
-        await fetchHistory();
-      } catch (error) {
-        console.error('Error during deletion:', error);
-        alert(currentLanguage === 'es' ? 'Error al eliminar el registro.' : 'Error deleting record.');
-      }
-    }
-  };
-
-  const handleEditGuest = (guest: GuestData) => {
-    setGuestData(guest);
-    setCurrentStep('registration');
-  };
-
-  const goToStep = (step: AppStep) => {
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    setCurrentStep(step);
-  };
-
-  const resetForm = () => {
-    setGuestData({
-      firstName: '',
-      lastName: '',
-      email: '',
-      cellphone: '',
-      nationality: '',
-      birthday: '',
-      checkInDate: new Date().toISOString().split('T')[0],
-      checkOutDate: '',
-    });
-    if (window.location.search) {
-      window.history.replaceState({}, '', window.location.pathname);
-    }
-    setReceiptData(null);
-    goToStep('welcome');
-  };
-
-  if (receiptData) {
-    return (
-      <div className="min-h-screen bg-gray-200/50 p-4 md:p-8 flex flex-col items-center">
-        <div className="max-w-4xl w-full space-y-6">
-          <div className="flex justify-between items-center no-print bg-white/80 backdrop-blur-md p-4 rounded-3xl shadow-lg border border-white sticky top-4 z-[100]">
-             <button 
-               onClick={resetForm} 
-               className="flex items-center gap-2 bg-noga-deepteal text-white px-6 py-3 rounded-2xl font-bold uppercase text-xs shadow-md transition-transform active:scale-95"
-             >
-               <X className="w-4 h-4" /> Cerrar
-             </button>
-             <button 
-               onClick={() => window.print()} 
-               className="flex items-center gap-2 bg-noga-brown text-white px-8 py-3 rounded-2xl font-bold uppercase text-xs shadow-xl transition-transform active:scale-95"
-             >
-               <Download className="w-4 h-4" /> Guardar PDF
-             </button>
-          </div>
-          <GuestReceipt data={receiptData} lang={currentLanguage} />
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen flex flex-col bg-white relative w-full">
-      <Header />
-      
-      <main className="flex-1 p-4 md:p-12 pb-32 w-full mx-auto">
-        {(isExtracting || isSaving) && (
-          <div className="fixed inset-0 bg-white/80 backdrop-blur-md z-[100] flex flex-col items-center justify-center space-y-4">
-            <Loader2 className="w-12 h-12 text-noga-brown animate-spin" />
-            <p className="text-noga-deepteal font-bold uppercase tracking-widest text-base">
-              {isExtracting ? t.scanning : (currentLanguage === 'es' ? 'Guardando Registro...' : 'Saving Registration...')}
-            </p>
-            <p className="text-sm text-noga-midteal">{isExtracting ? t.scanningSub : (currentLanguage === 'es' ? 'Subiendo datos y archivos...' : 'Uploading data and files...')}</p>
-          </div>
-        )}
-
-        <div className="w-full h-full">
-          {currentStep === 'welcome' && (
-            <Welcome 
-              onStart={() => goToStep('id-capture')} 
-              lang={currentLanguage} 
-              onLangChange={setCurrentLanguage} 
-            />
-          )}
-
-          {currentStep === 'id-capture' && (
-            <IdCapture 
-              onCapture={extractDataFromId} 
-              onBack={() => goToStep('welcome')} 
-              lang={currentLanguage}
-            />
-          )}
-
-          {currentStep === 'registration' && (
+      case 'registration':
+        return (
+          <div className="relative">
+            {isExtracting && (
+              <div className="absolute inset-x-0 -top-4 z-10 bg-noga-brown/10 backdrop-blur-md p-4 rounded-2xl border border-noga-brown/20 animate-pulse flex items-center justify-center gap-3">
+                <Loader2 className="w-5 h-5 text-noga-brown animate-spin" />
+                <span className="text-sm font-bold text-noga-brown uppercase tracking-widest">{t.scanning}</span>
+              </div>
+            )}
             <RegistrationForm 
               data={guestData} 
-              onChange={handleUpdateGuest} 
-              onNext={() => goToStep('rules')} 
-              lang={currentLanguage}
+              onChange={(data) => setGuestData(prev => ({ ...prev, ...data }))} 
+              onNext={() => setCurrentStep('rules')}
+              lang={language}
             />
-          )}
+          </div>
+        );
+      
+      case 'rules':
+        return <Rules onAccept={() => setCurrentStep('signature')} onBack={() => setCurrentStep('registration')} lang={language} />;
+      
+      case 'signature':
+        return (
+          <Signature 
+            onSign={(sig) => {
+              setGuestData(prev => ({ ...prev, signature: sig, acceptedRules: true }));
+              handleFinish();
+            }} 
+            onBack={() => setCurrentStep('rules')} 
+            lang={language} 
+          />
+        );
+      
+      case 'confirmation':
+        return <Confirmation data={guestData} onNew={resetApp} lang={language} />;
+      
+      case 'login':
+        return (
+          <AdminLogin 
+            onLogin={() => {
+              setIsAdminAuthenticated(true);
+              setCurrentStep('history');
+            }} 
+            onBack={resetApp}
+            lang={language}
+          />
+        );
 
-          {currentStep === 'rules' && (
-            <RulesGrid 
-              onNext={() => goToStep('signature')} 
-              onBack={() => goToStep('registration')}
-              lang={currentLanguage}
-            />
-          )}
+      case 'history':
+        return isAdminAuthenticated ? (
+          <HistoryView onBack={resetApp} lang={language} />
+        ) : (
+          <AdminLogin 
+            onLogin={() => {
+              setIsAdminAuthenticated(true);
+              setCurrentStep('history');
+            }} 
+            onBack={resetApp}
+            lang={language}
+          />
+        );
+      
+      default:
+        return <Welcome onStart={() => setCurrentStep('idCapture')} onLanguageChange={setLanguage} lang={language} />;
+    }
+  };
 
-          {currentStep === 'signature' && (
-            <SignaturePad 
-              data={guestData}
-              onComplete={(signature) => {
-                const finalData = { 
-                  ...guestData,
-                  signature, 
-                  acceptedAt: new Date().toLocaleString() 
-                };
-                saveToHistory(finalData);
-                goToStep('confirmation');
-              }}
-              onBack={() => goToStep('rules')}
-              lang={currentLanguage}
-            />
-          )}
+  return (
+    <div className="min-h-screen bg-white font-sans text-noga-deepteal flex flex-col">
+      {/* Header */}
+      <header className="bg-noga-deepteal text-white py-8 px-6 shadow-2xl relative overflow-hidden">
+        <div className="max-w-5xl mx-auto flex flex-col md:flex-row justify-between items-center relative z-10 gap-6">
+          <div className="flex flex-col items-center md:items-start">
+            <h1 className="text-4xl md:text-5xl font-serif tracking-tight flex items-baseline gap-2">
+              Hotel <span className="text-noga-lightblue italic font-normal">Noga</span>
+            </h1>
+            <div className="h-1 w-24 bg-noga-brown mt-2 rounded-full"></div>
+          </div>
+          <div className="flex flex-col items-center md:items-end uppercase tracking-[0.2em] text-[10px] md:text-xs font-bold space-y-1">
+            <span className="text-noga-lightblue">Tarjeta de Registro</span>
+            <span className="opacity-60 italic">Registration Card</span>
+          </div>
+          
+          <div className="hidden md:block text-[10px] opacity-40 text-right font-medium">
+            @HOTELNOGA<br />WWW.HNOGA.COM
+          </div>
+        </div>
+        {/* Abstract design elements */}
+        <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full -translate-y-1/2 translate-x-1/2 blur-3xl"></div>
+        <div className="absolute bottom-0 left-0 w-32 h-32 bg-noga-brown/10 rounded-full translate-y-1/2 -translate-x-1/2 blur-2xl"></div>
+      </header>
 
-          {currentStep === 'confirmation' && (
-            <Confirmation data={guestData} onReset={resetForm} lang={currentLanguage} />
-          )}
-
-          {currentStep === 'login' && (
-            <AdminLogin 
-              onLogin={() => {
-                setIsAdminAuthenticated(true);
-                goToStep('history');
-              }}
-              onBack={() => goToStep('welcome')}
-              lang={currentLanguage}
-            />
-          )}
-
-          {currentStep === 'history' && (
-            isAdminAuthenticated ? (
-              <HistoryView 
-                history={history} 
-                onBack={() => {
-                  setIsAdminAuthenticated(false);
-                  goToStep('welcome');
-                }} 
-                lang={currentLanguage} 
-                onEdit={handleEditGuest}
-                onDelete={handleDeleteGuest}
-              />
-            ) : (
-              <AdminLogin onLogin={() => { setIsAdminAuthenticated(true); goToStep('history'); }} onBack={() => goToStep('welcome')} lang={currentLanguage} />
-            )
-          )}
+      {/* Main Content */}
+      <main className="flex-1 max-w-5xl w-full mx-auto px-6 py-10">
+        <div className="bg-white">
+          {renderStep()}
         </div>
       </main>
 
-      <footer className="fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-sm border-t p-4 px-6 md:px-12 flex justify-between items-center z-50 no-print shadow-inner">
-        <div className="flex flex-col">
-          <p className="text-[12px] text-noga-deepteal font-bold uppercase tracking-tight">Hotel Noga</p>
-          <p className="text-[10px] text-noga-midteal">Comunidad y Convivencia</p>
+      {/* Footer / Navigation */}
+      <footer className="bg-noga-lightblue/10 py-8 px-6 border-t border-noga-midteal/10">
+        <div className="max-w-5xl mx-auto flex flex-col md:flex-row justify-between items-center gap-8">
+          <div className="flex flex-col items-center md:items-start space-y-1">
+            <span className="text-xs font-black uppercase tracking-widest text-noga-deepteal">Hotel Noga</span>
+            <span className="text-[10px] text-noga-midteal/60 font-medium">Comunidad y Convivencia</span>
+          </div>
+          
+          <div className="flex items-center gap-4">
+            <button 
+              onClick={() => setCurrentStep('login')}
+              className="flex items-center gap-2 px-6 py-3 bg-white border border-noga-midteal/20 rounded-2xl shadow-sm hover:shadow-md transition-all text-noga-deepteal text-[10px] font-bold uppercase tracking-widest group"
+            >
+              <Settings className="w-4 h-4 text-noga-midteal group-hover:rotate-90 transition-transform duration-500" />
+              Registros
+            </button>
+          </div>
         </div>
-        <button 
-          onClick={() => goToStep('login')}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg border border-noga-midteal/30 text-noga-deepteal hover:bg-noga-lightblue transition-colors"
-        >
-          <Settings className="w-4 h-4" />
-          <span className="text-[12px] font-bold uppercase">Registros</span>
-        </button>
       </footer>
     </div>
   );
-};
+}
 
 export default App;
