@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { GuestData, Language } from '../types';
 import { translations } from '../translations';
@@ -114,16 +115,16 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ data, onChange, onN
         </div>
         <div>
           <label className={labelClass}>{t.checkIn}</label>
-          <input required type="date" value={data.checkInDate} onChange={e => onChange({ checkInDate: e.target.value })} className={inputClass} />
+          <input required type="date" value={data.checkInDate || ''} onChange={e => onChange({ checkInDate: e.target.value })} className={inputClass} />
         </div>
         <div>
           <label className={labelClass}>{t.checkOut}</label>
-          <input required type="date" value={data.checkOutDate} onChange={e => onChange({ checkOutDate: e.target.value })} className={inputClass} />
+          <input required type="date" value={data.checkOutDate || ''} onChange={e => onChange({ checkOutDate: e.target.value })} className={inputClass} />
         </div>
       </div>
 
-      <button type="submit" className="w-full bg-noga-deepteal text-white py-6 rounded-3xl font-bold shadow-2xl active:scale-95 transition-all text-xl uppercase tracking-widest mt-6">
-        {t.nextBtn}
+      <button type="submit" className="w-full bg-noga-deepteal text-white py-6 rounded-2xl font-bold hover:bg-noga-brown transition-all shadow-xl active:scale-95 text-xl uppercase tracking-widest mt-6">
+        {t.nextBtn || (lang === 'es' ? 'CONTINUAR' : 'CONTINUE')}
       </button>
     </form>
   );
