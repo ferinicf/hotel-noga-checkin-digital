@@ -27,4 +27,4 @@ export interface Rule {
   color: string;
 }
 
-export type AppStep = 'welcome' | 'id-capture' | 'registration' | 'rules' | 'signature' | 'confirmation' | 'history';
+export type AppStep = 'welcome' | 'id-capture' | 'registration' | 'rules' | 'signature' | 'confirmation' | 'history' | 'login';
