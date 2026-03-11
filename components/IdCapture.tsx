@@ -26,6 +26,8 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
   const [debugSharpness, setDebugSharpness] = useState(0);
   const animationRef = useRef<number>();
   const lastSharpnessRef = useRef<number[]>([]);
+  const cameraStartTimeRef = useRef<number>(0);
+  const [secondsElapsed, setSecondsElapsed] = useState(0);
 
   const capturePhoto = useCallback(() => {
     if (!videoRef.current || !videoRef.current.videoWidth) return;
@@ -113,13 +115,22 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
         const minBrightness = 45;
 
         if (avgSharpness > minSharpness && avgBrightness > minBrightness) {
+          const elapsed = Date.now() - cameraStartTimeRef.current;
+          setSecondsElapsed(Math.floor(elapsed / 1000));
+
           setDetectionProgress(prev => {
-            // Incremento MUCHO más lento para obligar al usuario a mantenerlo fijo (2% o 3%)
-            const increment = avgSharpness > 15 ? 4 : 2; 
+            // Si no han pasado 10 segundos, limitamos el progreso proporcionalmente al tiempo
+            if (elapsed < 10000) {
+              const timeProgress = (elapsed / 10000) * 100;
+              return Math.min(timeProgress, prev + 1);
+            }
+
+            // Después de 10s, permitimos que el progreso avance según la nitidez
+            const increment = avgSharpness > 15 ? 5 : 2;
             const next = prev + increment;
+            
             if (next >= 100) {
               if (prev < 100) {
-                // Retardo adicional para asegurar que la cámara haya enfocado bien
                 setTimeout(() => capturePhoto(), 800);
               }
               return 100;
@@ -127,8 +138,7 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
             return next;
           });
         } else {
-          // Penalización mayor si se mueve o sale del foco
-          setDetectionProgress(prev => Math.max(0, prev - 15));
+          setDetectionProgress(prev => Math.max(0, prev - 10));
         }
       }
 
@@ -161,7 +171,9 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
     setIsLoading(true);
     setPermissionError(null);
     setDetectionProgress(0);
+    setSecondsElapsed(0);
     lastSharpnessRef.current = [];
+    cameraStartTimeRef.current = Date.now();
 
     if (stream) {
       stream.getTracks().forEach(track => track.stop());
@@ -236,7 +248,12 @@ const IdCapture: React.FC<IdCaptureProps> = ({ onCapture, onBack, lang }) => {
                   <div className="bg-black/60 backdrop-blur-md px-6 py-2 rounded-full flex items-center gap-2 border border-white/20">
                     <Zap className={`w-4 h-4 ${detectionProgress > 50 ? 'text-yellow-400 fill-yellow-400' : 'text-white'}`} />
                     <span className="text-xs font-bold text-white uppercase tracking-widest">
-                      {detectionProgress > 0 ? (lang === 'es' ? `Escaneando: ${detectionProgress}%` : `Scanning: ${detectionProgress}%`) : (lang === 'es' ? 'Centra el documento' : 'Center the document')}
+                      {secondsElapsed < 10 
+                        ? (lang === 'es' ? `Estabilizando: ${10 - secondsElapsed}s` : `Stabilizing: ${10 - secondsElapsed}s`)
+                        : (detectionProgress > 0 
+                            ? (lang === 'es' ? `Capturando: ${detectionProgress}%` : `Capturing: ${detectionProgress}%`) 
+                            : (lang === 'es' ? 'Centra el documento' : 'Center the document'))
+                      }
                     </span>
                   </div>
                   <div className="w-48 h-2 bg-white/20 rounded-full overflow-hidden border border-white/10">
